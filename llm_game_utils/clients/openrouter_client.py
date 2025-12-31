@@ -121,11 +121,22 @@ class OpenRouterClient(BaseLLMClient):
 
         logger.info(f"OpenRouter client initialized for {app_name}")
 
-    def __del__(self):
-        """Clean up HTTP client."""
-        if hasattr(self, 'client'):
+    def close(self) -> None:
+        """Close the underlying HTTP client.
+
+        Call this method when the client is no longer needed to ensure
+        that network resources are released promptly.
+        """
+        if hasattr(self, "client") and self.client is not None:
             self.client.close()
 
+    def __enter__(self) -> "OpenRouterClient":
+        """Enter the runtime context related to this object."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit the runtime context and close the HTTP client."""
+        self.close()
     def add_model_config(
         self,
         model_id: str,
