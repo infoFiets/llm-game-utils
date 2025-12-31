@@ -58,6 +58,41 @@ class TestGameResultLogger:
         assert session_id == "custom-session-id"
         assert "custom-session-id" in logger.sessions
 
+    def test_start_session_with_invalid_filename_chars(self, logger):
+        """Test that game names with invalid filename characters are sanitized."""
+        # Game name with characters invalid in filenames
+        session_id = logger.start_session(
+            game_name="Catan: Seafarers / Cities & Knights",
+            players=["P1"]
+        )
+
+        # Session ID should not contain invalid characters
+        assert ":" not in session_id
+        assert "/" not in session_id
+        assert "\\" not in session_id
+        assert session_id in logger.sessions
+
+        # Should be able to save without errors
+        logger.save_session(session_id)
+
+    def test_file_encoding_with_unicode(self, logger, temp_output_dir):
+        """Test that unicode characters are properly saved and loaded."""
+        session_id = logger.start_session(
+            game_name="Pokémon Battle",
+            players=["Ash 🔥", "Misty 💧"]
+        )
+
+        # Save session
+        logger.save_session(session_id)
+
+        # Clear and reload
+        logger.sessions.clear()
+        loaded = logger.load_session(session_id)
+
+        # Verify unicode was preserved
+        assert loaded["game_name"] == "Pokémon Battle"
+        assert loaded["players"] == ["Ash 🔥", "Misty 💧"]
+
     def test_log_move(self, logger):
         """Test logging a move."""
         session_id = logger.start_session("TestGame", ["P1"])

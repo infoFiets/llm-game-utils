@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -10,6 +11,38 @@ from ..clients.base_client import LLMResponse
 
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_filename(name: str) -> str:
+    """Sanitize a string for safe use in filenames.
+
+    Removes or replaces characters that are invalid in filenames across
+    different operating systems (Windows, macOS, Linux).
+
+    Args:
+        name: String to sanitize
+
+    Returns:
+        Sanitized string safe for use in filenames
+    """
+    # Replace invalid filename characters with underscores
+    # Invalid chars: / \ : * ? " < > |
+    sanitized = re.sub(r'[/\\:*?"<>|]', '_', name)
+
+    # Remove leading/trailing spaces and dots (problematic on Windows)
+    sanitized = sanitized.strip('. ')
+
+    # Limit length to avoid filesystem limits (255 chars is common)
+    # Reserve space for timestamp and extension
+    max_name_length = 100
+    if len(sanitized) > max_name_length:
+        sanitized = sanitized[:max_name_length]
+
+    # If completely empty after sanitization, use a default
+    if not sanitized:
+        sanitized = "game"
+
+    return sanitized
 
 
 class GameResultLogger:
@@ -71,7 +104,9 @@ class GameResultLogger:
             Session ID
         """
         if session_id is None:
-            session_id = f"{game_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            # Sanitize game name to ensure filesystem-safe session ID
+            safe_game_name = _sanitize_filename(game_name)
+            session_id = f"{safe_game_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         self.sessions[session_id] = {
             "session_id": session_id,
@@ -232,7 +267,7 @@ class GameResultLogger:
 
         output_file = self.output_dir / f"{session_id}.json"
 
-        with open(output_file, 'w') as f:
+        with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(self.sessions[session_id], f, indent=2)
 
         logger.info(f"Saved session {session_id} to {output_file}")
@@ -255,7 +290,7 @@ class GameResultLogger:
         if not input_file.exists():
             raise FileNotFoundError(f"Session file not found: {input_file}")
 
-        with open(input_file, 'r') as f:
+        with open(input_file, 'r', encoding='utf-8') as f:
             session_data = json.load(f)
 
         self.sessions[session_id] = session_data
