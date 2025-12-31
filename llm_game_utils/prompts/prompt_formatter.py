@@ -246,14 +246,23 @@ Please provide your response in a clear, structured format."""
         import re
 
         # Try to find JSON in markdown code blocks
-        json_pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
+        # First, capture the full content of the code block, then extract JSON from it.
+        json_pattern = r"```(?:json)?\s*([\s\S]*?)```"
         match = re.search(json_pattern, response, re.DOTALL)
 
         if match:
+            code_block_content = match.group(1).strip()
+            # First try to parse the entire code block content as JSON
             try:
-                return json.loads(match.group(1))
+                return json.loads(code_block_content)
             except json.JSONDecodeError:
-                pass
+                # If that fails, try to extract a JSON object from within the code block
+                brace_match = re.search(r"\{[\s\S]*\}", code_block_content)
+                if brace_match:
+                    try:
+                        return json.loads(brace_match.group(0))
+                    except json.JSONDecodeError:
+                        pass
 
         # Try to parse the entire response as JSON
         try:
