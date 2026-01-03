@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import httpx
 from tenacity import (
@@ -15,6 +15,16 @@ from tenacity import (
 )
 
 from .base_client import BaseLLMClient, LLMResponse
+from ..exceptions import (
+    InsufficientCreditsError,
+    RateLimitError,
+    InvalidModelError,
+    APIError
+)
+
+if TYPE_CHECKING:
+    from ..tracking.budget import BudgetTracker
+    from ..caching.response_cache import ResponseCache
 
 
 logger = logging.getLogger(__name__)
@@ -73,7 +83,9 @@ class OpenRouterClient(BaseLLMClient):
         timeout: int = 120,
         app_name: str = "llm-game-utils",
         site_url: str = "https://github.com/infoFiets/llm-game-utils",
-        model_configs: Optional[Dict[str, Dict[str, Any]]] = None
+        model_configs: Optional[Dict[str, Dict[str, Any]]] = None,
+        budget_tracker: Optional["BudgetTracker"] = None,
+        cache: Optional["ResponseCache"] = None
     ):
         """Initialize OpenRouter client.
 
@@ -86,6 +98,8 @@ class OpenRouterClient(BaseLLMClient):
             site_url: Site URL for OpenRouter headers
             model_configs: Optional dict mapping model IDs to config dicts with
                           'name' and 'pricing' (input/output costs per 1K tokens)
+            budget_tracker: Optional BudgetTracker instance to monitor spending
+            cache: Optional ResponseCache instance to cache responses
 
         Raises:
             ValueError: If API key is not provided and not found in environment
@@ -119,7 +133,15 @@ class OpenRouterClient(BaseLLMClient):
         # Model configurations (name and pricing)
         self.model_configs = model_configs or {}
 
+        # Budget tracking and caching
+        self.budget_tracker = budget_tracker
+        self.cache = cache
+
         logger.info(f"OpenRouter client initialized for {app_name}")
+        if self.budget_tracker:
+            logger.info("Budget tracking enabled")
+        if self.cache:
+            logger.info("Response caching enabled")
 
     def close(self) -> None:
         """Close the underlying HTTP client.
@@ -239,10 +261,23 @@ class OpenRouterClient(BaseLLMClient):
 
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error for {model_id}: {e.response.status_code} - {e.response.text}")
-            raise
+
+            # Parse error response for specific error types
+            status_code = e.response.status_code
+            error_text = e.response.text.lower()
+
+            if status_code == 429:
+                raise RateLimitError(f"Rate limit exceeded for {model_id}")
+            elif status_code == 402 or "insufficient" in error_text or "credits" in error_text:
+                raise InsufficientCreditsError(f"Insufficient credits for {model_id}")
+            elif status_code == 404 or "not found" in error_text:
+                raise InvalidModelError(model_id)
+            else:
+                raise APIError(f"HTTP {status_code} error for {model_id}: {e.response.text}")
+
         except httpx.TimeoutException as e:
             logger.error(f"Timeout error for {model_id}: {str(e)}")
-            raise
+            raise APIError(f"Timeout error for {model_id}: {str(e)}")
         except Exception as e:
             logger.error(f"Unexpected error for {model_id}: {str(e)}")
             raise
@@ -254,6 +289,7 @@ class OpenRouterClient(BaseLLMClient):
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        use_cache: bool = True,
         **kwargs
     ) -> LLMResponse:
         """Query a model with a prompt.
@@ -264,14 +300,44 @@ class OpenRouterClient(BaseLLMClient):
             system_prompt: Optional system prompt
             temperature: Sampling temperature (0.0 to 1.0)
             max_tokens: Maximum tokens to generate
+            use_cache: Whether to use cache for this query (default: True)
             **kwargs: Additional parameters (e.g., top_p, frequency_penalty)
 
         Returns:
             LLMResponse object with results and metadata
 
         Raises:
-            httpx.HTTPError: If API request fails
+            APIError: If API request fails
+            BudgetExceededError: If budget limit would be exceeded
+            InsufficientCreditsError: If account has no credits
+            RateLimitError: If rate limit is hit
+            InvalidModelError: If model doesn't exist
         """
+        # Check cache first (if enabled and use_cache=True)
+        if self.cache and use_cache:
+            cached_response = self.cache.get(
+                model_id=model_id,
+                prompt=prompt,
+                temperature=temperature,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens
+            )
+
+            if cached_response:
+                logger.info(f"Using cached response for {model_id}")
+                # Reconstruct LLMResponse from cached data
+                return LLMResponse(**cached_response)
+
+        # Estimate cost for budget check
+        estimated_cost = 0.0
+        if self.budget_tracker and model_id in self.model_configs:
+            # Rough estimation: assume 1000 input tokens + 500 output tokens
+            pricing = self.model_configs[model_id]["pricing"]
+            estimated_cost = (1000 / 1000) * pricing["input"] + (500 / 1000) * pricing["output"]
+
+            # Check budget before making the call
+            self.budget_tracker.check_budget(estimated_cost)
+
         # Prepare messages
         messages = []
         if system_prompt:
@@ -305,6 +371,10 @@ class OpenRouterClient(BaseLLMClient):
         # Calculate cost
         cost = self.calculate_cost(model_id, input_tokens, output_tokens)
 
+        # Record actual cost in budget tracker
+        if self.budget_tracker:
+            self.budget_tracker.add_cost(cost)
+
         # Get model name
         model_name = self.model_configs.get(model_id, {}).get("name", model_id)
 
@@ -315,7 +385,7 @@ class OpenRouterClient(BaseLLMClient):
             f"${cost:.4f}"
         )
 
-        return LLMResponse(
+        llm_response = LLMResponse(
             model_id=model_id,
             model_name=model_name,
             prompt=prompt,
@@ -334,6 +404,19 @@ class OpenRouterClient(BaseLLMClient):
                 **kwargs
             }
         )
+
+        # Store in cache (if enabled)
+        if self.cache and use_cache:
+            self.cache.set(
+                model_id=model_id,
+                prompt=prompt,
+                temperature=temperature,
+                response=llm_response,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens
+            )
+
+        return llm_response
 
     def batch_query(
         self,
