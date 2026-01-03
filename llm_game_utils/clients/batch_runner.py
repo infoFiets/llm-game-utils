@@ -206,6 +206,7 @@ class BatchRunner:
                         "input_tokens": 0,
                         "output_tokens": 0,
                         "time": 0.0,
+                        "model_name": model_id,
                         "error": str(e),
                         "success": False
                     }
