@@ -185,8 +185,9 @@ class ResponseCache:
             # Delete corrupted cache file
             try:
                 cache_file.unlink()
-            except Exception:
-                pass
+            except Exception as delete_error:
+                # Best-effort cleanup: log but do not fail if deletion of corrupted cache file fails
+                logger.debug(f"Failed to delete corrupted cache file {cache_file}: {delete_error}")
             return None
 
         except Exception as e:
@@ -313,8 +314,9 @@ class ResponseCache:
                     try:
                         cache_file.unlink()
                         deleted += 1
-                    except Exception:
-                        pass
+                    except Exception as delete_error:
+                        # Best-effort cleanup: log but do not fail if deletion fails
+                        logger.debug(f"Failed to delete corrupted cache file {cache_file}: {delete_error}")
 
             logger.info(f"Cleared {deleted} expired cache entries")
             return deleted
@@ -369,8 +371,9 @@ class ResponseCache:
                     if newest is None or cached_time > newest:
                         newest = cached_time
 
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Skip corrupted or unreadable cache files but log for debugging
+                    logger.debug(f"Skipping cache file {cache_file} due to error while reading stats: {e}")
 
             stats["cache_size_mb"] = total_size / (1024 * 1024)
             stats["oldest_entry"] = oldest

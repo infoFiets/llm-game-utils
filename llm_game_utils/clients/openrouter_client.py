@@ -326,7 +326,17 @@ class OpenRouterClient(BaseLLMClient):
             if cached_response:
                 logger.info(f"Using cached response for {model_id}")
                 # Reconstruct LLMResponse from cached data
-                return LLMResponse(**cached_response)
+                # Ensure timestamp is a datetime object (cache stores ISO string)
+                response_data = dict(cached_response)
+                ts = response_data.get("timestamp")
+                if isinstance(ts, str):
+                    try:
+                        response_data["timestamp"] = datetime.fromisoformat(ts)
+                    except (ValueError, AttributeError):
+                        logger.warning(f"Failed to parse cached timestamp '{ts}' for model {model_id}")
+                        # Use current time as fallback
+                        response_data["timestamp"] = datetime.now()
+                return LLMResponse(**response_data)
 
         # Estimate cost for budget check
         estimated_cost = 0.0
