@@ -9,8 +9,8 @@ long_description = (this_directory / "README.md").read_text(encoding="utf-8")
 
 setup(
     name="llm-game-utils",
-    version="0.1.0",
-    description="Shared utilities for LLM game projects",
+    version="0.2.0",
+    description="Shared utilities for LLM game projects with budget tracking, caching, and enhanced error handling",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="Tom",

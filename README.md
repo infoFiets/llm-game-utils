@@ -5,8 +5,13 @@ A lightweight Python package providing shared utilities for building LLM-powered
 ## Features
 
 - **LLM Client Infrastructure**: Ready-to-use OpenRouter client with rate limiting, retry logic, and error handling
+- **Budget Tracking**: Monitor and limit API spending with daily and session budgets
+- **Response Caching**: Cache LLM responses to disk to avoid redundant API calls during development
+- **JSON Response Parser**: Robust extraction and validation of JSON from LLM responses
+- **Batch Runner**: Query multiple models with the same prompt for comparison
 - **Result Logging**: Track game sessions, player moves, and LLM interactions
 - **Prompt Formatting**: Utilities for creating structured, game-context prompts
+- **Enhanced Error Handling**: Specific exception types for better error management
 - **Extensible Architecture**: Abstract base classes for implementing custom LLM clients
 - **Minimal Dependencies**: Only essential dependencies for maximum compatibility
 
@@ -317,6 +322,227 @@ model_configs = {
 }
 
 client = OpenRouterClient(model_configs=model_configs)
+```
+
+### BudgetTracker
+
+Track and limit API spending to prevent accidental overspending.
+
+#### Initialization
+
+```python
+from llm_game_utils import BudgetTracker
+
+tracker = BudgetTracker(
+    daily_budget=10.0,      # $10 per day maximum
+    session_budget=2.0,     # $2 per session maximum
+    warning_threshold=0.8,  # Warn at 80% of budget
+    enforce_limits=True     # Raise exception when exceeded
+)
+```
+
+#### Usage with OpenRouterClient
+
+```python
+# Create budget tracker
+budget = BudgetTracker(daily_budget=5.0, session_budget=1.0)
+
+# Pass to client
+client = OpenRouterClient(budget_tracker=budget)
+
+# Budget is automatically checked before each query
+try:
+    response = client.query(model_id="openai/gpt-4-turbo", prompt="Hello")
+except BudgetExceededError as e:
+    print(f"Budget exceeded: {e}")
+
+# Check budget status
+print(budget.get_status_report())
+```
+
+#### Key Methods
+
+- `check_budget(estimated_cost)` - Check if a call is within budget
+- `add_cost(actual_cost)` - Record actual cost of a call
+- `get_remaining_budget()` - Get remaining budget amounts
+- `get_status_report()` - Human-readable budget status
+- `reset_session()` - Reset session budget (keeps daily total)
+
+### ResponseCache
+
+Cache LLM responses to disk to save money and time during development.
+
+#### Initialization
+
+```python
+from llm_game_utils import ResponseCache
+
+cache = ResponseCache(
+    cache_dir=".llm_cache",  # Where to store cache files
+    enabled=True,            # Enable/disable caching
+    ttl_hours=24            # Cache expires after 24 hours (None = never)
+)
+```
+
+#### Usage with OpenRouterClient
+
+```python
+# Create cache
+cache = ResponseCache(ttl_hours=24)
+
+# Pass to client
+client = OpenRouterClient(cache=cache)
+
+# First call hits API
+response1 = client.query(model_id="openai/gpt-4-turbo", prompt="What is 2+2?")
+
+# Second identical call uses cache (no API cost!)
+response2 = client.query(model_id="openai/gpt-4-turbo", prompt="What is 2+2?")
+
+# Bypass cache for a specific query
+response3 = client.query(
+    model_id="openai/gpt-4-turbo",
+    prompt="What is 2+2?",
+    use_cache=False  # Force fresh API call
+)
+
+# Get cache statistics
+stats = cache.get_stats()
+print(f"Cache hit rate: {stats['hit_rate']:.1%}")
+print(f"Total entries: {stats['total_entries']}")
+
+# Clear expired entries
+cache.clear_expired()
+
+# Clear all cache
+cache.clear()
+```
+
+### JSON Response Parser
+
+Robust utilities for extracting and validating JSON from LLM responses.
+
+#### Basic Extraction
+
+```python
+from llm_game_utils.prompts import json_parser
+
+# Handles various formats automatically
+response1 = '{"name": "Alice", "score": 100}'
+response2 = '```json\n{"name": "Bob", "score": 90}\n```'
+response3 = 'The player data is {"name": "Charlie", "score": 80} for this turn.'
+
+data1 = json_parser.extract_json_from_response(response1)  # {'name': 'Alice', ...}
+data2 = json_parser.extract_json_from_response(response2)  # {'name': 'Bob', ...}
+data3 = json_parser.extract_json_from_response(response3)  # {'name': 'Charlie', ...}
+```
+
+#### Validation
+
+```python
+# Extract and validate required fields
+data = json_parser.extract_and_validate(
+    response='{"name": "Alice", "score": 100}',
+    required_fields=["name", "score"]
+)
+
+if data:
+    print(f"{data['name']} scored {data['score']}")
+else:
+    print("Invalid or incomplete JSON")
+```
+
+#### Retry Until Valid
+
+```python
+from llm_game_utils.prompts.json_parser import retry_until_valid_json
+
+# Automatically retry until LLM returns valid JSON
+result = retry_until_valid_json(
+    client=client,
+    prompt="Return the player's resources in Catan as JSON",
+    required_fields=["wood", "brick", "wheat", "sheep", "ore"],
+    max_retries=3,
+    model_id="openai/gpt-4-turbo"
+)
+
+if result:
+    print(f"Resources: {result}")
+```
+
+### BatchRunner
+
+Query multiple models with the same prompt for comparison.
+
+#### Basic Usage
+
+```python
+from llm_game_utils import BatchRunner
+
+client = OpenRouterClient()
+runner = BatchRunner(client)
+
+# Query multiple models
+results = runner.query_all_models(
+    model_ids=[
+        "openai/gpt-4-turbo",
+        "anthropic/claude-3.5-sonnet",
+        "google/gemini-pro"
+    ],
+    prompt="What is the capital of France?",
+    temperature=0.7,
+    parallel=False  # Set to True for faster execution (more API load)
+)
+
+# Access results
+for model_id, result in results.items():
+    if result['success']:
+        print(f"{model_id}: {result['response']}")
+        print(f"  Cost: ${result['cost']:.4f}, Time: {result['time']:.2f}s")
+    else:
+        print(f"{model_id} failed: {result['error']}")
+```
+
+#### Compare Responses
+
+```python
+# Generate formatted comparison
+comparison = runner.compare_responses(results, output_format="markdown")
+print(comparison)
+
+# Or as a table
+table = runner.compare_responses(results, output_format="table")
+
+# Or as JSON
+import json
+json_output = runner.compare_responses(results, output_format="json")
+```
+
+### Enhanced Error Handling
+
+Specific exception types for better error management.
+
+```python
+from llm_game_utils.exceptions import (
+    BudgetExceededError,
+    InsufficientCreditsError,
+    RateLimitError,
+    InvalidModelError,
+    InvalidJSONResponseError,
+    CacheError
+)
+
+try:
+    response = client.query(model_id="openai/gpt-4-turbo", prompt="Hello")
+except BudgetExceededError as e:
+    print(f"Budget limit reached: {e.budget_type} budget of ${e.limit}")
+except InsufficientCreditsError:
+    print("Add credits to your OpenRouter account")
+except RateLimitError:
+    print("Rate limit hit, waiting...")
+    time.sleep(60)
+except InvalidModelError as e:
+    print(f"Model {e.model_id} not found")
 ```
 
 ## Common Model IDs
